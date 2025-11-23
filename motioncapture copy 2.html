@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Motion Capture — Dark Mode</title>
+
+<style>
+@font-face {
+  font-family: 'InkTrap';
+  src: url('inktrap.otf') format('opentype');
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0e0e0e;
+  color: #e4e4e4;
+  font-family: "InkTrap", system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+/* LAYOUT ------------------------------------------------------- */
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* PANELS ------------------------------------------------------- */
+.panel {
+  background: #141414;
+  border: 1px solid #252525;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0px 4px 20px rgba(0,0,0,0.3);
+}
+
+/* TITLE -------------------------------------------------------- */
+h2 {
+  margin: 0 0 12px 0;
+  font-weight: 600;
+  font-size: 20px;
+  color: #ffffff;
+}
+
+/* CANVAS ------------------------------------------------------- */
+#videoCanvas {
+  width: 100%;
+  border-radius: 10px;
+  display: block;
+}
+
+#macroCanvas {
+  width: 100%;
+  height: 150px;
+  background: #0d0d0d;
+  border-radius: 10px;
+}
+
+/* INFO PANEL --------------------------------------------------- */
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.info-block {
+  background: #1a1a1a;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid #2a2a2a;
+}
+
+.info-label {
+  font-size: 13px;
+  color: #999;
+}
+
+.info-value {
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: 4px;
+  color: #fff;
+}
+
+/* BUTTONS ------------------------------------------------------ */
+.btn-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+button {
+  background: #262626;
+  border: 1px solid #3d3d3d;
+  padding: 10px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #fff;
+  font-family: "InkTrap", system-ui;
+  transition: 0.2s;
+}
+
+button:hover {
+  background: #333;
+}
+
+/* HOME BUTTON -------------------------------------------------- */
+.home-btn {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  background: #ffffff10;
+  padding: 10px 18px;
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  border: 1px solid #444;
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.home-btn:hover {
+  background: #ffffff20;
+}
+</style>
+</head>
+
+<body>
+
+<a class="home-btn" href="../index.html">Home</a>
+
+<div class="wrapper">
+
+  <!-- 1. LIVE VIDEO PANEL -->
+  <div class="panel">
+    <h2>Motion Input</h2>
+    <canvas id="videoCanvas" width="640" height="480"></canvas>
+  </div>
+
+  <!-- 2. MACRO LINE PANEL -->
+  <div class="panel">
+    <h2>Last 30 Seconds Overview</h2>
+    <canvas id="macroCanvas" width="1000" height="150"></canvas>
+  </div>
+
+  <!-- 3. INFO PANEL -->
+  <div class="panel">
+    <h2>Data</h2>
+    <div class="info-grid">
+      <div class="info-block">
+        <div class="info-label">Brightest Value</div>
+        <div class="info-value" id="brightVal">0</div>
+      </div>
+      <div class="info-block">
+        <div class="info-label">X Position</div>
+        <div class="info-value" id="xVal">0</div>
+      </div>
+      <div class="info-block">
+        <div class="info-label">Y Position</div>
+        <div class="info-value" id="yVal">0</div>
+      </div>
+      <div class="info-block">
+        <div class="info-label">Captured Points</div>
+        <div class="info-value" id="pointsVal">0</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="start-btn">Start Tracking</button>
+      <button id="stop-btn">Stop</button>
+      <button id="download-btn">Download CSV</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* CORE VARIABLES ----------------------------------------------*/
+let videoStream = null;
+let animationActive = false;
+let animationHandle = null;
+
+const videoCanvas = document.getElementById("videoCanvas");
+const vctx = videoCanvas.getContext("2d");
+
+const macroCanvas = document.getElementById("macroCanvas");
+const mctx = macroCanvas.getContext("2d");
+
+let path = [];
+let macroHistory = [];
+let csvData = [];
+
+/* UI ELEMENTS --------------------------------------------------*/
+const brightVal = document.getElementById("brightVal");
+const xVal = document.getElementById("xVal");
+const yVal = document.getElementById("yVal");
+const pointsVal = document.getElementById("pointsVal");
+
+/* BRIGHTEST POINT ----------------------------------------------*/
+function findBrightestPoint(data, w) {
+  let maxVal = -1;
+  let maxIndex = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const b = (data[i] + data[i+1] + data[i+2]) / 3;
+    if (b > maxVal) {
+      maxVal = b;
+      maxIndex = i / 4;
+    }
+  }
+
+  return {
+    x: maxIndex % w,
+    y: Math.floor(maxIndex / w),
+    brightness: maxVal
+  };
+}
+
+/* MAIN LOOP ----------------------------------------------------*/
+function run(video) {
+  if (!animationActive) return;
+
+  vctx.drawImage(video, 0, 0, videoCanvas.width, videoCanvas.height);
+
+  const frame = vctx.getImageData(0, 0, videoCanvas.width, videoCanvas.height);
+  const pt = findBrightestPoint(frame.data, videoCanvas.width);
+
+  brightVal.textContent = pt.brightness.toFixed(0);
+  xVal.textContent = pt.x;
+  yVal.textContent = pt.y;
+
+  path.push(pt);
+  csvData.push({
+    t: performance.now(),
+    x: pt.x,
+    y: pt.y
+  });
+
+  pointsVal.textContent = path.length;
+
+  const now = performance.now();
+  macroHistory.push({ ...pt, t: now });
+  macroHistory = macroHistory.filter(p => now - p.t <= 30000);
+
+  drawMacro();
+
+  animationHandle = requestAnimationFrame(() => run(video));
+}
+
+/* MACRO LINE ---------------------------------------------------*/
+function drawMacro() {
+  mctx.clearRect(0, 0, macroCanvas.width, macroCanvas.height);
+
+  if (macroHistory.length < 2) return;
+
+  mctx.beginPath();
+  mctx.strokeStyle = "#67e8f9";
+  mctx.lineWidth = 2;
+
+  const start = macroHistory[0].t;
+  const range = 30000;
+
+  for (let i = 0; i < macroHistory.length; i++) {
+    const p = macroHistory[i];
+    const tNorm = (p.t - start) / range;
+    const x = tNorm * macroCanvas.width;
+    const y = macroCanvas.height - (p.y / videoCanvas.height) * macroCanvas.height;
+
+    if (i === 0) mctx.moveTo(x, y);
+    else mctx.lineTo(x, y);
+  }
+
+  mctx.stroke();
+}
+
+/* START --------------------------------------------------------*/
+document.getElementById("start-btn").onclick = () => {
+  if (animationActive) return;
+
+  navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+    videoStream = stream;
+
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.play();
+
+    video.onloadedmetadata = () => {
+      videoCanvas.width = video.videoWidth;
+      videoCanvas.height = video.videoHeight;
+      animationActive = true;
+      run(video);
+    };
+  });
+};
+
+/* STOP ---------------------------------------------------------*/
+document.getElementById("stop-btn").onclick = () => {
+  animationActive = false;
+
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+
+  if (animationHandle) cancelAnimationFrame(animationHandle);
+};
+
+/* DOWNLOAD -----------------------------------------------------*/
+document.getElementById("download-btn").onclick = () => {
+  let csv = "timestamp,x,y\n";
+  csv += csvData.map(p => `${p.t},${p.x},${p.y}`).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "motion_capture.csv";
+  a.click();
+};
+</script>
+
+</body>
+</html>
